@@ -1,10 +1,12 @@
-import type {
-  CollectionBeforeChangeHook,
-  CollectionConfig,
-  Config,
-  Field,
-  FieldAccess,
-  Plugin,
+import {
+  validations,
+  type CollectionBeforeChangeHook,
+  type CollectionConfig,
+  type Config,
+  type Field,
+  type FieldAccess,
+  type Plugin,
+  type Validate,
 } from 'payload'
 
 import { createBeforeOperationHook, createRefreshHook, OIDC_REFUSAL_NAME } from './before-operation'
@@ -87,22 +89,59 @@ const hasField = (fields: Field[], name: string): boolean =>
   )
 
 /**
- * Copies the fields, giving each named top-level, row or collapsible data field `update` access
- * that only sync passes. Copies, never edits: a field config the host shares with another
- * collection must not be locked there too.
+ * Copies the fields, replacing each named top-level, row or collapsible data field with
+ * `replace(field)`. Copies, never edits: a field config the host shares with another collection
+ * must not change there too.
  */
-const withSyncOnlyUpdate = (fields: Field[], names: Set<string>, found: Set<string>): Field[] =>
+const mapNamedFields = (
+  fields: Field[],
+  names: Set<string>,
+  found: Set<string>,
+  replace: (field: Field) => Field,
+): Field[] =>
   fields.map((field) => {
     if ('name' in field && names.has(field.name)) {
       found.add(field.name)
-      const access = (field as { access?: Record<string, unknown> }).access
-      return { ...field, access: { ...access, update: syncWriteOnly } } as Field
+      return replace(field)
     }
     if (field.type === 'row' || field.type === 'collapsible') {
-      return { ...field, fields: withSyncOnlyUpdate(field.fields, names, found) } as Field
+      return { ...field, fields: mapNamedFields(field.fields, names, found, replace) } as Field
     }
     return field
   })
+
+/** Gives a field `update` access that only sync passes. */
+const syncOnlyUpdate = (field: Field): Field => {
+  const access = (field as { access?: Record<string, unknown> }).access
+  return { ...field, access: { ...access, update: syncWriteOnly } } as Field
+}
+
+/** No role: an empty list, or no single value. */
+const isNoRole = (value: unknown): boolean =>
+  Array.isArray(value) ? value.length === 0 : value === null || value === undefined || value === ''
+
+/**
+ * Lets a disabled user have no role. Disabling clears the role, so with a `required` role field
+ * every later save of that user, such as an admin editing a profile field, would fail. No role
+ * passes only while `oidcDisabledAt` is set; anything else goes to the field's own `validate`, or
+ * to Payload's default for its type (known options, `required` and so on).
+ */
+const allowNoRoleWhenDisabled = (field: Field): Field => {
+  const own = (field as { validate?: Validate }).validate
+  const fallback = (validations as unknown as Record<string, Validate | undefined>)[field.type]
+  const validate: Validate = (value, args) => {
+    const siblingData = args?.siblingData as Record<string, unknown> | undefined
+    if (isNoRole(value) && Boolean(siblingData?.[OIDC_FIELDS.disabledAt])) return true
+    if (own) return own(value, args)
+    // As Payload applies its default (it does so only to fields without a `validate`).
+    return fallback ? fallback(value, { ...field, ...args }) : true
+  }
+  return { ...field, validate } as Field
+}
+
+/** The fields with the role field's validation allowing no role on a disabled user. */
+const withRoleValidation = (fields: Field[], options: ResolvedOidcOptions): Field[] =>
+  mapNamedFields(fields, new Set([options.roleField]), new Set(), allowNoRoleWhenDisabled)
 
 /** Makes the provider-owned fields updatable only by sync, adding `email` so it can be locked too. */
 const lockManagedFields = (collection: CollectionConfig, options: ResolvedOidcOptions) => {
@@ -112,7 +151,7 @@ const lockManagedFields = (collection: CollectionConfig, options: ResolvedOidcOp
   const found = new Set<string>()
   // Only update: creation is already limited to sync (and the break-glass first-register) by
   // the beforeOperation hook, and first-register needs to write these fields.
-  const locked = withSyncOnlyUpdate(fields, names, found)
+  const locked = mapNamedFields(fields, names, found, syncOnlyUpdate)
   for (const name of names) {
     if (!found.has(name)) throw new Error(`payload-oidc: ${collection.slug}.${name} not found.`)
   }
@@ -173,7 +212,12 @@ export const oidcPlugin =
         : auth,
       endpoints: [...(target.endpoints ?? []), ...createEndpoints(options, client, testing?.clock)],
       fields: [
-        ...(options.enabled ? lockManagedFields(target, options) : (target.fields ?? [])),
+        // Role validation whether or not sign-in is on: users disabled before it was turned off
+        // keep no role, and must still be editable.
+        ...withRoleValidation(
+          options.enabled ? lockManagedFields(target, options) : (target.fields ?? []),
+          options,
+        ),
         ...pluginFields(options),
       ],
       hooks: {
