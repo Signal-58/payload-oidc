@@ -1,5 +1,5 @@
 import type { Payload } from 'payload'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { resolveOptions, type OidcPluginOptions, type ReconcileSource } from './options'
 import { createReconcileTask, RECONCILE_TASK_SLUG, releaseStaleRuns } from './reconcile-task'
@@ -175,5 +175,61 @@ describe('the reconcile schedule', () => {
     expect(
       createReconcileTask(resolveOptions({ ...base, issuer: undefined })).schedule,
     ).toBeUndefined()
+  })
+})
+
+describe('the reconcile run', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** A Payload with no linked users, and a source that answers after `answerAfterMs`. */
+  const runWith = (options: Partial<OidcPluginOptions>, answerAfterMs: number) => {
+    const set = vi.fn().mockResolvedValue(undefined)
+    const payload = {
+      db: { collections: { users: { find: () => ({ lean: async () => [] }) } } },
+      kv: { set },
+      logger: { info: vi.fn() },
+    } as unknown as Payload
+    const slowSource: ReconcileSource = {
+      ...source,
+      fetchGroupMembers: (groups) =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(new Map(groups.map((group) => [group, []]))), answerAfterMs)
+        }),
+    }
+    const task = createReconcileTask(
+      resolveOptions({ ...base, reconcile: slowSource, ...options }),
+      {
+        clock: () => now,
+      },
+    )
+    const handler = task.handler as (args: unknown) => Promise<{ output: unknown }>
+    return { result: handler({ input: {}, job: { id: 'job-1' }, req: { payload } }), set }
+  }
+
+  it('stops before changing anything when the source outlasts 80% of the stale threshold', async () => {
+    vi.useFakeTimers()
+    const { result, set } = runWith({}, 9 * 60e3)
+    const outcome = expect(result).rejects.toThrow(/took longer than 480 seconds/)
+    await vi.advanceTimersByTimeAsync(8 * 60e3)
+    await outcome
+    expect(set).not.toHaveBeenCalled()
+  })
+
+  it('finishes a run whose source answers in time', async () => {
+    vi.useFakeTimers()
+    const { result, set } = runWith({ reconcileStaleAfterMinutes: 30 }, 20 * 60e3)
+    await vi.advanceTimersByTimeAsync(20 * 60e3)
+    await expect(result).resolves.toEqual({ output: { disabled: 0, roleChanges: 0, users: 0 } })
+    expect(set).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('puts no limit on the source with stale-run release off', async () => {
+    vi.useFakeTimers()
+    const { result } = runWith({ reconcileStaleAfterMinutes: false }, 60 * 60e3)
+    await vi.advanceTimersByTimeAsync(60 * 60e3)
+    await expect(result).resolves.toMatchObject({ output: { users: 0 } })
   })
 })

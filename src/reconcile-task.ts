@@ -73,6 +73,47 @@ export const releaseStaleRuns = async (
   return released.map((job) => job.id)
 }
 
+/** The share of the stale threshold a run's source may take before the run gives up. */
+const SOURCE_TIME_SHARE = 0.8
+
+/**
+ * The options with the reconcile source's answer limited to `limitMs`. Payload doesn't touch a
+ * job while its handler runs, so a run that outlasted the stale threshold would look cut off,
+ * be released, and overlap the new run. Reconcile writes nothing until every group is read, so
+ * stopping at the read changes nothing.
+ */
+const withSourceTimeLimit = (
+  options: ResolvedOidcOptions,
+  limitMs: number,
+): ResolvedOidcOptions => {
+  const source = options.reconcile!
+  return {
+    ...options,
+    reconcile: {
+      ...source,
+      fetchGroupMembers: async (groups) => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const late = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `payload-oidc: the reconcile source took longer than ${limitMs / 1000} seconds; the run stopped before changing anything, so it can't outlast reconcileStaleAfterMinutes and be taken for a cut-off run.`,
+                ),
+              ),
+            limitMs,
+          )
+        })
+        try {
+          return await Promise.race([source.fetchGroupMembers(groups), late])
+        } finally {
+          clearTimeout(timer)
+        }
+      },
+    },
+  }
+}
+
 /**
  * The reconcile job. Payload schedules it only on its own queue, and runs schedules only for
  * queues listed in `jobs.autoRun`, so the app must add that queue there. A failed run (a group
@@ -105,7 +146,7 @@ export const createReconcileTask = (
                 // On every tick, not only at startup: with start-first deploys the run a deploy
                 // cuts off usually belongs to the old process, after this one started.
                 const olderThanSeconds = options.reconcileStaleAfterSeconds
-                if (olderThanSeconds) {
+                if (olderThanSeconds !== undefined) {
                   try {
                     await releaseStaleRuns(args.req.payload, {
                       now: clock(),
@@ -140,7 +181,15 @@ export const createReconcileTask = (
     if (!options.enabled || !options.reconcile) {
       return { output: { disabled: 0, roleChanges: 0, users: 0 } }
     }
-    const { disabled, roleChanges, users } = await reconcileUsers(req.payload, options, clock())
+    const staleAfterSeconds = options.reconcileStaleAfterSeconds
+    const { disabled, roleChanges, users } = await reconcileUsers(
+      req.payload,
+      // While stale runs are released, a live run must end well before it would look stale.
+      staleAfterSeconds === undefined
+        ? options
+        : withSourceTimeLimit(options, staleAfterSeconds * 1000 * SOURCE_TIME_SHARE),
+      clock(),
+    )
     return { output: { disabled, roleChanges, users } }
   },
 })

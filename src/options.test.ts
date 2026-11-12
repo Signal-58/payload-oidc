@@ -115,9 +115,12 @@ describe('resolveOptions', () => {
     expect(
       resolveOptions({ ...base, reconcileStaleAfterMinutes: false }).reconcileStaleAfterSeconds,
     ).toBeUndefined()
-    expect(() => resolveOptions({ ...base, reconcileStaleAfterMinutes: 0 })).toThrow(
-      /reconcileStaleAfterMinutes must be a positive number of minutes/,
-    )
+    // A tiny threshold would round to nothing, or stop every live run.
+    for (const minutes of [0, 0.005, 0.5, Number.NaN]) {
+      expect(() => resolveOptions({ ...base, reconcileStaleAfterMinutes: minutes })).toThrow(
+        /reconcileStaleAfterMinutes must be a number of minutes, at least 1/,
+      )
+    }
   })
 
   it('links by email only before the cut-off, and never without one', () => {

@@ -79,8 +79,9 @@ export type OidcPluginOptions = {
   /**
    * A reconcile run still processing after this many minutes was cut off, for example by a deploy
    * that replaced the process mid-run, and would block the queue for good. Before each schedule,
-   * such runs are marked failed with Payload's own cancel, so a new one can be queued. `false`
-   * turns this off.
+   * such runs are marked failed with Payload's own cancel, so a new one can be queued. A live run
+   * therefore stops, before changing anything, if the source hasn't answered within 80% of this.
+   * `false` turns both off. At least 1.
    */
   reconcileStaleAfterMinutes?: number | false
   /** Who may remove a disabled user. Defaults to nobody, so an app must decide. */
@@ -162,10 +163,10 @@ const positiveHours = (value: number | undefined, fallback: number, name: string
   return hours
 }
 
-const positiveMinutes = (value: number | undefined, fallback: number, name: string): number => {
+const atLeastOneMinute = (value: number | undefined, fallback: number, name: string): number => {
   const minutes = value ?? fallback
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    throw new Error(`payload-oidc: ${name} must be a positive number of minutes.`)
+  if (!Number.isFinite(minutes) || minutes < 1) {
+    throw new Error(`payload-oidc: ${name} must be a number of minutes, at least 1.`)
   }
   return minutes
 }
@@ -255,7 +256,7 @@ export const resolveOptions = (options: OidcPluginOptions): ResolvedOidcOptions 
       options.reconcileStaleAfterMinutes === false
         ? undefined
         : Math.round(
-            positiveMinutes(options.reconcileStaleAfterMinutes, 10, 'reconcileStaleAfterMinutes') *
+            atLeastOneMinute(options.reconcileStaleAfterMinutes, 10, 'reconcileStaleAfterMinutes') *
               60,
           ),
     reconcileHeartbeatMaxSeconds: Math.round(
