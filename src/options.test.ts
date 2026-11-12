@@ -107,6 +107,19 @@ describe('resolveOptions', () => {
     expect(isBreakGlassEmail(resolveOptions(base), 'ops@example.test')).toBe(false)
   })
 
+  it('releases stale reconcile runs after 10 minutes unless told otherwise', () => {
+    expect(resolveOptions(base).reconcileStaleAfterSeconds).toBe(600)
+    expect(
+      resolveOptions({ ...base, reconcileStaleAfterMinutes: 30 }).reconcileStaleAfterSeconds,
+    ).toBe(1800)
+    expect(
+      resolveOptions({ ...base, reconcileStaleAfterMinutes: false }).reconcileStaleAfterSeconds,
+    ).toBeUndefined()
+    expect(() => resolveOptions({ ...base, reconcileStaleAfterMinutes: 0 })).toThrow(
+      /reconcileStaleAfterMinutes must be a positive number of minutes/,
+    )
+  })
+
   it('links by email only before the cut-off, and never without one', () => {
     const options = resolveOptions({ ...base, linkByEmailUntil: '2026-12-01' })
     expect(canLinkByEmail(options, new Date('2026-11-30T23:59:59Z'))).toBe(true)
