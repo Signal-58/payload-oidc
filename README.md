@@ -21,7 +21,16 @@ truth for the auth collection's users and roles.
   up to an absolute cap from sign-in (`sessionMaxHours`). A refresh near the cap gets a token that
   ends at the cap, not `sessionHours` later.
 
-Payload `^3.91` with the MongoDB adapter. MIT licence.
+Payload `^3.91` with the MongoDB adapter, on Node 24. MIT licence.
+
+## Install
+
+```bash
+pnpm add @signal58/payload-oidc
+```
+
+`payload` and `@payloadcms/ui` (`^3.91`, at the same version as each other) and `react` 19 are peer
+dependencies. The package is ESM only.
 
 ## Setup
 
@@ -51,10 +60,11 @@ export default buildConfig({
 })
 ```
 
-Register `${serverURL}/api/<collection>/oidc/callback` as the client's only redirect URI, with the
-Authorization Code grant, a confidential client, and an RS256 signing key. Request scopes
-`openid email profile` (the default); the provider must send `email_verified: true` and a
-`groups` claim.
+Register `${serverURL}${routes.api}/<collection>/oidc/callback` as the client's redirect URI (with
+Payload's default `routes.api`, `https://cms.example/api/users/oidc/callback`), and the same path
+on each of `additionalServerURLs`, with the Authorization Code grant, a confidential client, and an
+RS256 signing key. Request scopes `openid email profile` (the default); the provider must send
+`email_verified: true` and a `groups` claim.
 
 With the issuer, client ID or client secret unset, the plugin is off: it still adds its fields and
 endpoints (which answer 404), so the schema doesn't change, but sign-in works exactly as before.
@@ -64,6 +74,8 @@ Run `payload generate:importmap` after adding the plugin: the sign-in button is 
 component, `@signal58/payload-oidc/rsc#OidcLoginButton`, added to `admin.components.beforeLogin`.
 
 ## What it adds
+
+Endpoint paths are relative to the collection's REST route, `${routes.api}/<collection>`.
 
 | Addition                      | Purpose                                                                                                   |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -156,9 +168,9 @@ Each run:
 
 ## Removing users
 
-`POST /api/<collection>/oidc/remove/:id`, or the sidebar's "Remove user" on a disabled user. Only
-disabled users: an active one would be created again at their next sign-in, and the break-glass
-account never. The plugin scans the config for relationship and upload fields (in arrays, groups,
+`POST ${routes.api}/<collection>/oidc/remove/:id`, or the sidebar's "Remove user" on a disabled
+user. Only disabled users: an active one would be created again at their next sign-in, and the
+break-glass account never. The plugin scans the config for relationship and upload fields (in arrays, groups,
 blocks and tabs, polymorphic included, and in versions) that can point at the collection. If none
 refers to the user they are deleted; otherwise their names become "Removed user", their email
 `removed-<id>@removed.invalid`, and every other profile field (photo, links, anything the app
@@ -203,6 +215,53 @@ first-register screen while the flag is on; it can't set the plugin's fields the
 | `buttonLabel`                        | `'Sign in with single sign-on'` |                                                                   |
 | `allowInsecureIssuer`                | `false`                         | Allows an `http:` issuer, never when `NODE_ENV=production`.       |
 
+## Adopting in an app
+
+The plugin owns sign-in, the managed fields and the password refusals. These are the app's:
+
+1. **Provider.** One confidential client per environment, each with its own secret: Authorization
+   Code with PKCE, RS256, and the callback above registered for every origin the environment
+   serves. The ID token must carry `email_verified: true` and a `groups` claim limited to the role
+   table's groups. With Authentik, use the "verified email" scope mapping (it sends `false`
+   otherwise) and pin the subject mode to the hashed user ID, which is what reconcile compares.
+2. **Dependency.** Pin an exact version. Check that `pnpm why @payloadcms/ui` shows one version: a
+   second copy breaks the admin components' React context.
+3. **`serverURL` in every environment**, Payload's or the plugin's option, because the redirect URI
+   is built from it. A second public origin (a LAN host, say) goes in `additionalServerURLs`, with
+   its own callback registered.
+4. **Access your app sets after plugins run.** If a later step replaces collection or field access,
+   keep the plugin's rules there: `create` only for sync writes (`req.context[OIDC_SYNC_CONTEXT]`),
+   `delete` denied (removal goes through `removeAccess` and the plugin's endpoint), `unlock`
+   denied, and the email, name and role fields updatable only by sync (`syncWriteOnly`). A patch
+   to the role field must keep that rule rather than overwrite it.
+5. **Endpoint allowlists.** If the app limits which REST endpoints a collection exposes, add the
+   plugin's four to the auth collection only.
+6. **Role guards.** A hook that limits role changes (for example, one that protects the last top
+   admin) must let sync writes through in both directions: the provider is right, and the
+   break-glass account remains. Sign-in updates existing users directly in MongoDB without hooks;
+   creating a user goes through Payload, so hooks run then.
+7. **Empty roles.** A disabled user has no role. If the role field is `required`, its validation
+   must allow an empty list while `oidcDisabledAt` is set; the plugin doesn't do this yet.
+8. **Existing users.** Write a migration that builds the collection's indexes (the sparse unique
+   `oidcSubject` index, before writing in a transaction) and sets `oidcLinkable: true` on the
+   users who may link by email, skipping any already linked. Set `linkByEmailUntil` to the end of
+   the linking window. Users created later are never linkable.
+9. **Jobs.** With `reconcile`, add its queue (`oidc-reconcile` for `authentikSource`) to
+   `jobs.autoRun` every 15 minutes. A run cut off by a deploy stays locked and blocks the queue,
+   so release stale runs before each schedule; the plugin doesn't do this yet.
+10. **Generated files.** Run `payload generate:importmap` and `payload generate:types`, and commit
+    both.
+11. **Break-glass.** A dedicated account that is never linked, with its password stored safely.
+    Turn `passwordLogin` on only for the linking window and emergencies.
+12. **Tests and scripts.** Tests that expect a password sign-in to work, or a wrong password's
+    401, now meet the refusal. Scripts that grant roles directly drift from the provider: retire
+    them or limit them to the break-glass account. Add an integration test that signs in through
+    `@signal58/payload-oidc/testing` (`startFakeProvider`).
+13. **Monitoring.** Point an uptime check at `${routes.api}/<collection>/oidc/reconcile/health`.
+14. **Rollout.** Deploy with `passwordLogin` on and `linkByEmailUntil` set; existing users link at
+    their first single sign-on. After the window, unset `passwordLogin`, then check that login,
+    forgotten and reset password are refused for everyone.
+
 ## Known limits
 
 - MongoDB only: session pushes and disables are conditional, atomic updates.
@@ -218,13 +277,24 @@ first-register screen while the flag is on; it can't set the plugin's fields the
   sign-in is closed: with `passwordLogin` on it shows on every account, though the server lets only
   the break-glass account change its own password.
 
-## Tests
+## Development
 
 ```bash
+pnpm install
+pnpm check               # typecheck and lint
 pnpm test                # unit tests
 pnpm test:integration    # end to end: a real Payload on MongoDB and a fake OIDC provider
+pnpm build               # dist/: ESM and declarations
+node scripts/check-dist.mjs  # the built entry points load in plain Node
+pnpm check:package       # publint and arethetypeswrong
 ```
 
 The integration suite needs a MongoDB replica set (`PAYLOAD_OIDC_DATABASE_URI`, or a local one on
 `127.0.0.1:27017` by default, named by `PAYLOAD_OIDC_REPLICA_SET` if set) and owns its database: it
 refuses one that holds anything else.
+
+## Releases and security
+
+Versions follow semver, recorded in [CHANGELOG.md](CHANGELOG.md). A `v*` tag publishes to npm from
+GitHub Actions, with provenance. Report vulnerabilities privately, as [SECURITY.md](SECURITY.md)
+describes.
