@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MONGO_IMAGE: mongo:8.0.14@sha256:6eaaf8b194dc2c78a61deae63f1c163c2e55769c2157d6406f517d902694c792
+
+jobs:
+  package:
+    name: Lint, format and package checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm build
+      - run: node scripts/check-dist.mjs
+      - name: publint and arethetypeswrong
+        run: pnpm check:package
+
+  test:
+    name: Tests (Payload ${{ matrix.payload }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor of the peer range, and the newest version any app runs.
+        payload: ['3.91.0', '3.92.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Use Payload ${{ matrix.payload }}
+        env:
+          PAYLOAD_VERSION: ${{ matrix.payload }}
+        run: |
+          # Every installed version of a package, comma-separated.
+          versions() {
+            pnpm why "$1" --json | node -p \
+              "[...new Set(JSON.parse(require('fs').readFileSync(0, 'utf8')).map((e) => e.version))].join()"
+          }
+          if [ "$(versions payload)" != "$PAYLOAD_VERSION" ]; then
+            pnpm add --save-dev --save-exact "payload@$PAYLOAD_VERSION" \
+              "@payloadcms/ui@$PAYLOAD_VERSION" "@payloadcms/db-mongodb@$PAYLOAD_VERSION"
+          fi
+          # One copy of each, at the matrix version.
+          for package in payload @payloadcms/ui @payloadcms/db-mongodb; do
+            test "$(versions "$package")" = "$PAYLOAD_VERSION"
+          done
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Built entry points load in Node
+        run: pnpm build && node scripts/check-dist.mjs
+      - name: Start a MongoDB replica set
+        run: |
+          docker run --detach --name mongo --publish 127.0.0.1:27017:27017 "$MONGO_IMAGE" \
+            --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 30); do
+            if docker exec mongo mongosh --quiet --eval \
+              'try { rs.status().ok } catch { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] }).ok }' \
+              >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          for attempt in $(seq 1 30); do
+            state=$(docker exec mongo mongosh --quiet --eval 'rs.status().members[0].stateStr' 2>/dev/null || true)
+            if [ "$state" = "PRIMARY" ]; then exit 0; fi
+            sleep 1
+          done
+          echo "MongoDB didn't become primary" >&2
+          docker logs mongo >&2
+          exit 1
+      - name: Integration tests
+        env:
+          PAYLOAD_OIDC_REPLICA_SET: rs0
+        run: pnpm test:integration
