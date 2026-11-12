@@ -66,6 +66,29 @@ describe('takeLinkingSnapshot', () => {
     expect(users.updateMany).not.toHaveBeenCalled()
   })
 
+  it('says which collection’s index build failed', async () => {
+    const { createIndexes, payload, users } = fakePayload()
+    createIndexes.mockRejectedValue(new Error('E11000 duplicate key error'))
+    await expect(takeLinkingSnapshot({ payload, session })).rejects.toThrow(
+      'payload-oidc: building the indexes of "users" failed: Error: E11000 duplicate key error',
+    )
+    expect(users.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('explains a write conflict with the index build, and passes other errors on', async () => {
+    const conflict = fakePayload()
+    conflict.users.updateMany.mockRejectedValue(
+      Object.assign(new Error('catalog changes'), { code: 112 }),
+    )
+    await expect(takeLinkingSnapshot({ payload: conflict.payload, session })).rejects.toThrow(
+      /conflicted with the index build on "users"\. Call takeLinkingSnapshot before any other operation/,
+    )
+    const other = fakePayload()
+    const failure = new Error('network')
+    other.users.updateMany.mockRejectedValue(failure)
+    await expect(takeLinkingSnapshot({ payload: other.payload, session })).rejects.toBe(failure)
+  })
+
   it('refuses a collection without the plugin’s fields, or without the MongoDB adapter', async () => {
     const withoutPlugin = fakePayload({ fields: [{ name: 'email' }] })
     await expect(takeLinkingSnapshot({ payload: withoutPlugin.payload })).rejects.toThrow(

@@ -57,6 +57,12 @@ const usersCollection = (payload: Payload, slug: string) => {
   return { collection: database.collection(name), model }
 }
 
+/** MongoDB's write conflict, which a transaction gets when the collection changed under it. */
+const isWriteConflict = (error: unknown): boolean => {
+  const candidate = error as { code?: unknown; hasErrorLabel?: (label: string) => boolean } | null
+  return candidate?.code === 112 || candidate?.hasErrorLabel?.('TransientTransactionError') === true
+}
+
 /**
  * For an app's migration, before sign-in is turned on: marks every existing user that isn't
  * linked yet `oidcLinkable`, so each can be linked once, by verified email, until
@@ -66,10 +72,11 @@ const usersCollection = (payload: Payload, slug: string) => {
  * It builds the collection's indexes first, among them the sparse unique `oidcSubject` index:
  * Mongoose starts that build in the background when `payload migrate` boots, and writing in the
  * migration's transaction while it runs fails with a transient catalog-change error. The build is
- * idempotent and runs outside the transaction, so call this before anything else in the migration
- * touches the collection: a build that has work to do waits for every transaction holding the
- * collection, and the transaction would be waiting for the build. It refuses, before any change,
- * a user that stores `oidcSubject: null`, which the sparse index would still index (and collide
+ * idempotent and runs outside the transaction. **Call this first in the migration**, before any
+ * other operation in its transaction, on any collection: a transaction reads from the moment of
+ * its first operation, so after a build that had work to do its write to the collection fails
+ * (a write conflict, and a rerun of the migration then passes). It refuses, before any change, a
+ * user that stores `oidcSubject: null`, which the sparse index would still index (and collide
  * on). A user with an `oidcSubject` is already linked and left alone, so a rerun is a no-op.
  *
  * ```ts
@@ -93,12 +100,28 @@ export const takeLinkingSnapshot = async (
   if (nullSubjects > 0) {
     throw new Error(`payload-oidc: a user of "${slug}" stores ${OIDC_FIELDS.subject} as null.`)
   }
-  await model.createIndexes()
-  const { modifiedCount } = await collection.updateMany(
-    { [OIDC_FIELDS.linkable]: { $exists: false }, [OIDC_FIELDS.subject]: { $exists: false } },
-    { $set: { [OIDC_FIELDS.linkable]: true } },
-    { session },
-  )
+  try {
+    await model.createIndexes()
+  } catch (error) {
+    // Every index on the collection is built here, not only the plugin's.
+    throw new Error(`payload-oidc: building the indexes of "${slug}" failed: ${String(error)}`, {
+      cause: error,
+    })
+  }
+  let modifiedCount: number
+  try {
+    ;({ modifiedCount } = await collection.updateMany(
+      { [OIDC_FIELDS.linkable]: { $exists: false }, [OIDC_FIELDS.subject]: { $exists: false } },
+      { $set: { [OIDC_FIELDS.linkable]: true } },
+      { session },
+    ))
+  } catch (error) {
+    if (!isWriteConflict(error)) throw error
+    throw new Error(
+      `payload-oidc: the linking snapshot conflicted with the index build on "${slug}". Call takeLinkingSnapshot before any other operation in the migration, or run the migration again.`,
+      { cause: error },
+    )
+  }
   payload.logger.info(`payload-oidc: marked ${modifiedCount} users of "${slug}" linkable.`)
   return modifiedCount
 }
