@@ -39,12 +39,18 @@ export const startHarness = async ({
   clock,
   key,
   plugin,
+  rolesRequired = false,
+  withoutServerURL = false,
 }: {
   clock: () => Date
   /** Names the suite's database and Payload instance. */
   key: string
   /** Overrides of the default plugin options; `issuer: undefined` turns the plugin off. */
   plugin?: Partial<OidcPluginOptions>
+  /** Makes the role field `required`, as many apps have it. */
+  rolesRequired?: boolean
+  /** Leaves Payload's `serverURL` unset (pass the plugin's `serverURL` option instead). */
+  withoutServerURL?: boolean
 }) => {
   const url = new URL(databaseUri!)
   url.pathname = `${url.pathname.replace(/\/$/, '') || '/payload_oidc_test'}_${key}`
@@ -83,6 +89,7 @@ export const startHarness = async ({
             type: 'select',
             hasMany: true,
             options: ['superadmin', 'admin', 'editor'],
+            required: rolesRequired,
           },
         ],
       },
@@ -104,7 +111,7 @@ export const startHarness = async ({
     db: mongooseAdapter({ url: url.href }),
     plugins: [oidcPlugin(pluginOptions, { clock })],
     secret: 'payload-oidc-test-secret',
-    serverURL: SERVER_URL,
+    serverURL: withoutServerURL ? undefined : SERVER_URL,
     telemetry: false,
     typescript: { autoGenerate: false },
   })

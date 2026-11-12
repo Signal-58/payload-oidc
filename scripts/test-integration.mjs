@@ -16,6 +16,7 @@ const result = spawnSync(
   'vitest',
   [
     'run',
+    'src/adoption.integration.test.ts',
     'src/plugin.integration.test.ts',
     'src/password-login.integration.test.ts',
     'src/reconcile.integration.test.ts',
