@@ -19,6 +19,7 @@ const result = spawnSync(
     'src/plugin.integration.test.ts',
     'src/password-login.integration.test.ts',
     'src/reconcile.integration.test.ts',
+    'test/routes-api.integration.test.ts',
   ],
   {
     env: { ...process.env, PAYLOAD_OIDC_DATABASE_URI: uri },
