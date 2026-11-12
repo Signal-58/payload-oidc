@@ -1,34 +1,66 @@
 {
   "name": "@signal58/payload-oidc",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "description": "Sign in to the Payload admin with an OpenID Connect provider, with the provider as the source of truth for users and roles.",
+  "keywords": [
+    "authentik",
+    "oidc",
+    "openid-connect",
+    "payload",
+    "payload-plugin",
+    "payloadcms",
+    "sso"
+  ],
+  "homepage": "https://github.com/Signal-58/payload-oidc#readme",
+  "bugs": "https://github.com/Signal-58/payload-oidc/issues",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Signal-58/payload-oidc.git"
+  },
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./rsc": {
-      "types": "./src/exports/rsc.tsx",
-      "default": "./src/exports/rsc.tsx"
+      "types": "./dist/exports/rsc.d.ts",
+      "default": "./dist/exports/rsc.js"
     },
     "./testing": {
-      "types": "./src/test/fake-provider.ts",
-      "default": "./src/test/fake-provider.ts"
+      "types": "./dist/test/fake-provider.d.ts",
+      "default": "./dist/test/fake-provider.js"
     },
     "./client": {
-      "types": "./src/exports/client.tsx",
-      "default": "./src/exports/client.tsx"
-    }
+      "types": "./dist/exports/client.d.ts",
+      "default": "./dist/exports/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "check": "tsc --noEmit && oxlint",
+    "check:package": "publint --strict && attw --pack . --profile esm-only",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint",
+    "prepack": "node scripts/build.mjs",
     "test": "vitest run",
-    "test:integration": "node scripts/test-integration.mjs"
+    "test:integration": "node scripts/test-integration.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "jose": "^6.2.12",
     "openid-client": "6.8.8"
   },
   "peerDependencies": {
@@ -37,16 +69,24 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@payloadcms/db-mongodb": "3.92.1",
     "@payloadcms/ui": "3.92.1",
     "@types/node": "22.18.0",
     "@types/react": "19.2.14",
-    "jose": "^6.2.12",
     "mongodb": "6.20.0",
-    "oxlint": "^1.68.0",
+    "next": "16.4.3",
+    "oxfmt": "0.53.0",
+    "oxlint": "1.77.0",
     "payload": "3.92.1",
+    "publint": "0.3.25",
     "react": "19.2.4",
+    "react-dom": "19.2.4",
     "typescript": "7.0.2",
-    "vitest": "^4.1.7"
-  }
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.20.0"
 }
