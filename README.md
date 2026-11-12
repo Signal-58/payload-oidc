@@ -7,14 +7,16 @@ truth for the auth collection's users and roles.
   the ID token at every sign-in and can't be edited in Payload.
 - Roles come from the provider's `groups` claim through one role table, highest role first.
 - A user whose groups grant no role is refused and disabled: role and sessions cleared,
-  `oidcDisabledAt` set, record kept.
+  `oidcDisabledAt` set, record kept. A disabled user stays editable even if the role field is
+  `required`.
 - Password sign-in is closed for the collection: `login`, `forgotPassword`, `resetPassword`,
   `unlock`, and setting a password through `update`, are refused through REST, the admin and the
   Local API alike. A break-glass account can be let back in with a flag.
 - A reconcile job (optional) reads the provider's role-table groups every 15 minutes and disables
   users who left them, so removal doesn't wait for a sign-in. It changes nothing unless every
   group was read, stops if it would disable too many users at once, and records a heartbeat that
-  an uptime check can watch.
+  an uptime check can watch. A run a deploy cut off is released at the next schedule.
+- A migration helper marks existing users as linkable by email, once, for a linking window.
 - A superadmin (the app decides who) can remove a disabled user: deleted if nothing refers to
   them, anonymised otherwise.
 - Sessions are ordinary Payload sessions: an idle timeout (`sessionHours`) that activity extends,
@@ -38,7 +40,7 @@ dependencies. The package is ESM only.
 import { oidcPlugin } from '@signal58/payload-oidc'
 
 export default buildConfig({
-  serverURL: process.env.SERVER_URL, // required: the redirect URI is built from it
+  serverURL: process.env.SERVER_URL, // or the plugin's serverURL: the redirect URI is built from it
   plugins: [
     oidcPlugin({
       collection: 'users',
@@ -87,6 +89,7 @@ Endpoint paths are relative to the collection's REST route, `${routes.api}/<coll
 | `beforeOperation` hook        | Closes password operations and creation outside sync; refuses `refresh` after the cap.                    |
 | `refresh` hook                | Signs a refreshed token that ends at the absolute cap.                                                    |
 | `beforeChange` hook           | Drops an `oidcSubject` of `null` or `''`, which would collide in the sparse index.                        |
+| Role field `validate`         | No role passes only on a disabled user; anything else goes to the field's own validation (see below).     |
 | `beforeLogin` component       | The sign-in button and error message; hides the password form while it's closed.                          |
 | `POST /oidc/remove/:id`       | Removes a disabled user (`removeAccess`, default nobody); a "Remove user" button in the sidebar calls it. |
 | `unlock` access denied        | Payload then hides "Force Unlock"; the operation is refused anyway.                                       |
@@ -94,6 +97,11 @@ Endpoint paths are relative to the collection's REST route, `${routes.api}/<coll
 | `loggingLevels.OidcRefusal`   | `info`: refused password operations and ended sessions are expected, not errors.                          |
 | `GET /oidc/reconcile/health`  | 200 while the last successful reconcile is recent, 503 once it isn't; for an uptime check.                |
 | `payload-oidc-reconcile` task | Registered always; scheduled on `reconcile.queue` only when a source is configured.                       |
+
+The role field's validation is wrapped, whether or not sign-in is on: an empty role (an empty
+list, or no single value) passes while `oidcDisabledAt` is set, so a `required` role field doesn't
+stop an admin saving a disabled user. Anything else goes to the field's own `validate`, or to
+Payload's default for its type (`required`, known options).
 
 The managed fields (`email`, first and last name, the role field) get `update` access that only
 the plugin's sync passes (`req.context.oidcSync`). **If your app replaces field or collection
@@ -166,6 +174,39 @@ Each run:
 - records a heartbeat in Payload's KV store; `GET /oidc/reconcile/health` answers 503 once it is
   older than `reconcileHeartbeatMaxMinutes` (default 45).
 
+A run cut off mid-way, for example by a deploy that replaced the process, would stay marked as
+processing, and Payload's scheduler queues nothing while it does. So before each schedule, the
+plugin marks reconcile runs still processing after `reconcileStaleAfterMinutes` (default 10; runs
+take seconds) as failed, with Payload's own cancel, and the same tick queues a new run. The dead
+run stays in the jobs collection as a failed job. `reconcileStaleAfterMinutes: false` turns this
+off. A `beforeSchedule` in `reconcileScheduleHooks` runs after it, in place of Payload's default
+rule.
+
+## Existing users
+
+Users who were in the collection before the plugin can be linked to their provider account once,
+by verified email, until `linkByEmailUntil`. Mark them from the app's own migration:
+
+```ts
+import type { MigrateDownArgs, MigrateUpArgs } from '@payloadcms/db-mongodb'
+import { clearLinkingSnapshot, takeLinkingSnapshot } from '@signal58/payload-oidc'
+
+export async function up(args: MigrateUpArgs): Promise<void> {
+  await takeLinkingSnapshot(args) // { collection: 'users' } by default
+}
+
+export async function down(args: MigrateDownArgs): Promise<void> {
+  await clearLinkingSnapshot(args)
+}
+```
+
+`takeLinkingSnapshot` builds the collection's indexes first (among them the sparse unique
+`oidcSubject` index, outside the migration's transaction), refuses a user that stores
+`oidcSubject: null`, then sets `oidcLinkable: true` on every user without an `oidcSubject`. A rerun
+marks nobody new. Call it before anything else in the migration touches the collection: an index
+build waits for every transaction that holds the collection. Users created later, at their first
+sign-in, are never linkable. `clearLinkingSnapshot` removes the marks and keeps links and disables.
+
 ## Removing users
 
 `POST ${routes.api}/<collection>/oidc/remove/:id`, or the sidebar's "Remove user" on a disabled
@@ -210,6 +251,8 @@ first-register screen while the flag is on; it can't set the plugin's fields the
 | `reconcile`                          | —                               | A `ReconcileSource`, such as `authentikSource(...)`.              |
 | `reconcileMaxDisableShare`           | `0.25`                          |                                                                   |
 | `reconcileHeartbeatMaxMinutes`       | `45`                            |                                                                   |
+| `reconcileStaleAfterMinutes`         | `10`                            | Releases a run still processing after this; `false` turns it off. |
+| `reconcileScheduleHooks`             | —                               | Payload schedule hooks for the reconcile task.                    |
 | `removeAccess`                       | nobody                          | `(req) => boolean`.                                               |
 | `serverURL`                          | Payload's `serverURL`           | The public origin the callback is registered under.               |
 | `buttonLabel`                        | `'Sign in with single sign-on'` |                                                                   |
@@ -227,8 +270,9 @@ The plugin owns sign-in, the managed fields and the password refusals. These are
 2. **Dependency.** Pin an exact version. Check that `pnpm why @payloadcms/ui` shows one version: a
    second copy breaks the admin components' React context.
 3. **`serverURL` in every environment**, Payload's or the plugin's option, because the redirect URI
-   is built from it. A second public origin (a LAN host, say) goes in `additionalServerURLs`, with
-   its own callback registered.
+   is built from it. An app that leaves Payload's unset outside production passes the plugin's
+   instead. A second public origin (a LAN host, say) goes in `additionalServerURLs`, with its own
+   callback registered.
 4. **Access your app sets after plugins run.** If a later step replaces collection or field access,
    keep the plugin's rules there: `create` only for sync writes (`req.context[OIDC_SYNC_CONTEXT]`),
    `delete` denied (removal goes through `removeAccess` and the plugin's endpoint), `unlock`
@@ -240,15 +284,16 @@ The plugin owns sign-in, the managed fields and the password refusals. These are
    admin) must let sync writes through in both directions: the provider is right, and the
    break-glass account remains. Sign-in updates existing users directly in MongoDB without hooks;
    creating a user goes through Payload, so hooks run then.
-7. **Empty roles.** A disabled user has no role. If the role field is `required`, its validation
-   must allow an empty list while `oidcDisabledAt` is set; the plugin doesn't do this yet.
-8. **Existing users.** Write a migration that builds the collection's indexes (the sparse unique
-   `oidcSubject` index, before writing in a transaction) and sets `oidcLinkable: true` on the
-   users who may link by email, skipping any already linked. Set `linkByEmailUntil` to the end of
-   the linking window. Users created later are never linkable.
+7. **Empty roles.** A disabled user has no role. The plugin's validation allows that on a
+   `required` role field (since 0.3.0), and keeps the field's own `validate`. An app-level rule
+   that does the same can go.
+8. **Existing users.** Add a migration that calls `takeLinkingSnapshot` (since 0.3.0; see
+   [Existing users](#existing-users)), and set `linkByEmailUntil` to the end of the linking window.
 9. **Jobs.** With `reconcile`, add its queue (`oidc-reconcile` for `authentikSource`) to
-   `jobs.autoRun` every 15 minutes. A run cut off by a deploy stays locked and blocks the queue,
-   so release stale runs before each schedule; the plugin doesn't do this yet.
+   `jobs.autoRun` every 15 minutes. A run a deploy cut off is released before the next schedule
+   (since 0.3.0), so an app-level hook that does this for the reconcile task can go. If the app
+   post-processes its jobs config (locks the jobs-stats global, say), check the reconcile task's
+   schedule still works.
 10. **Generated files.** Run `payload generate:importmap` and `payload generate:types`, and commit
     both.
 11. **Break-glass.** A dedicated account that is never linked, with its password stored safely.
