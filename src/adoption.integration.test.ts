@@ -43,8 +43,6 @@ describe.skipIf(!databaseUri)('payload-oidc in an adopting app', () => {
       clock,
       key: 'adoption',
       plugin: {
-        // Open for this suite's whole life, whatever the date it runs on.
-        linkByEmailUntil: new Date(Date.now() + 7 * 86_400e3).toISOString(),
         reconcile: source,
         serverURL: SERVER_URL,
       },

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { resolveOptions } from './options'
 import { pushSession, writeManagedFields } from './store'
 import {
+  AFTER_LINKING,
   BREAK_GLASS,
   databaseUri,
   jsonRequest,
@@ -155,7 +156,7 @@ describe.skipIf(!databaseUri)('payload-oidc sign-in', () => {
     expect(refused.location).toBe('/admin/login?oidc_error=account_conflict')
 
     await h.users().updateOne({ email: 'frank@example.test' }, { $set: { oidcLinkable: true } })
-    now = new Date('2026-12-02T00:00:00Z')
+    now = AFTER_LINKING
     const late = await h.signIn(editor('sub-frank', 'frank@example.test'))
     expect(late.location).toBe('/admin/login?oidc_error=account_conflict')
     expect(await userBySubject('sub-frank')).toBeUndefined()
