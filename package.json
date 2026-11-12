@@ -1,0 +1,52 @@
+{
+  "name": "@signal58/payload-oidc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sign in to the Payload admin with an OpenID Connect provider, with the provider as the source of truth for users and roles.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./rsc": {
+      "types": "./src/exports/rsc.tsx",
+      "default": "./src/exports/rsc.tsx"
+    },
+    "./testing": {
+      "types": "./src/test/fake-provider.ts",
+      "default": "./src/test/fake-provider.ts"
+    },
+    "./client": {
+      "types": "./src/exports/client.tsx",
+      "default": "./src/exports/client.tsx"
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit && oxlint",
+    "test": "vitest run",
+    "test:integration": "node scripts/test-integration.mjs"
+  },
+  "dependencies": {
+    "openid-client": "6.8.8"
+  },
+  "peerDependencies": {
+    "@payloadcms/ui": "^3.91.0",
+    "payload": "^3.91.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@payloadcms/db-mongodb": "3.92.1",
+    "@payloadcms/ui": "3.92.1",
+    "@types/node": "22.18.0",
+    "@types/react": "19.2.14",
+    "jose": "^6.2.12",
+    "mongodb": "6.20.0",
+    "oxlint": "^1.68.0",
+    "payload": "3.92.1",
+    "react": "19.2.4",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.7"
+  }
+}

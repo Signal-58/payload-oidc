@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "plugins": ["typescript", "react", "unicorn", "oxc"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2026": true
+  },
+  "settings": {
+    "react": {
+      "version": "19.2.4"
+    }
+  },
+  "overrides": [
+    {
+      "files": ["**/*.scss", "**/*.module.scss"],
+      "rules": {}
+    }
+  ],
+  "ignorePatterns": ["**/node_modules"],
+  "rules": {
+    "react/display-name": "off",
+    "react/react-in-jsx-scope": "off",
+    "typescript/ban-ts-comment": "warn",
+    "typescript/consistent-type-imports": [
+      "warn",
+      {
+        "prefer": "type-imports",
+        "fixStyle": "separate-type-imports"
+      }
+    ],
+    "typescript/no-empty-object-type": "warn",
+    "typescript/no-explicit-any": "warn",
+    "typescript/no-unused-vars": "off"
+  }
+}
