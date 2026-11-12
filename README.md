@@ -176,10 +176,20 @@ Each run:
 
 A run cut off mid-way, for example by a deploy that replaced the process, would stay marked as
 processing, and Payload's scheduler queues nothing while it does. So before each schedule, the
-plugin marks reconcile runs still processing after `reconcileStaleAfterMinutes` (default 10; runs
-take seconds) as failed, with Payload's own cancel, and the same tick queues a new run. The dead
-run stays in the jobs collection as a failed job. `reconcileStaleAfterMinutes: false` turns this
-off. A `beforeSchedule` in `reconcileScheduleHooks` runs after it, in place of Payload's default
+plugin marks reconcile runs on the schedule's queue still processing after
+`reconcileStaleAfterMinutes` (default 10, at least 1) as failed, with Payload's own cancel, and the
+same tick queues a new run. The dead run stays in the jobs collection as a failed job.
+
+Payload doesn't touch a job while its handler runs, so a live run that went on past the threshold
+would look the same. To rule that out, a run whose source hasn't answered within 80% of the
+threshold (8 minutes by default; `authentikSource` gives up on a request after 30 seconds) stops
+before changing anything and fails, and the next tick tries again. Cancelling only marks the job:
+a process that was paused rather than stopped, and resumes, finishes its run alongside the new
+one. Reconcile's writes are conditional, so the two don't undo each other, but the cancelled job
+still shows as failed.
+
+`reconcileStaleAfterMinutes: false` turns off both the release and the time limit, as in 0.2.0. A
+`beforeSchedule` in `reconcileScheduleHooks` runs after the release, in place of Payload's default
 rule.
 
 ## Existing users
@@ -203,9 +213,12 @@ export async function down(args: MigrateDownArgs): Promise<void> {
 `takeLinkingSnapshot` builds the collection's indexes first (among them the sparse unique
 `oidcSubject` index, outside the migration's transaction), refuses a user that stores
 `oidcSubject: null`, then sets `oidcLinkable: true` on every user without an `oidcSubject`. A rerun
-marks nobody new. Call it before anything else in the migration touches the collection: an index
-build waits for every transaction that holds the collection. Users created later, at their first
-sign-in, are never linkable. `clearLinkingSnapshot` removes the marks and keeps links and disables.
+marks nobody new. **Call it first in the migration**, before any other operation in its
+transaction, on any collection: a transaction reads from the moment of its first operation, so
+after an index build that had work to do, its write fails with a write conflict (the error says
+so, and running the migration again passes). An index that fails to build, the plugin's or not,
+fails the migration with the collection named. Users created later, at their first sign-in, are
+never linkable. `clearLinkingSnapshot` removes the marks and keeps links and disables.
 
 ## Removing users
 
@@ -232,31 +245,31 @@ first-register screen while the flag is on; it can't set the plugin's fields the
 
 ## Options
 
-| Option                               | Default                         | Notes                                                             |
-| ------------------------------------ | ------------------------------- | ----------------------------------------------------------------- |
-| `collection`                         | `'users'`                       | An auth collection.                                               |
-| `issuer`, `clientId`, `clientSecret` | —                               | All three, or the plugin is off.                                  |
-| `roles.field`                        | —                               | The role field.                                                   |
-| `roles.table`                        | —                               | Role → groups, highest role first.                                |
-| `roles.hasMany`                      | `true`                          | `false` stores a single value.                                    |
-| `fields`                             | `firstName`, `lastName`         | Names of the name fields.                                         |
-| `lastNamePlaceholder`                | `'-'`                           | Used when the provider sends no `family_name`.                    |
-| `sessionHours`                       | `8`                             | Becomes the collection's `tokenExpiration`.                       |
-| `sessionMaxHours`                    | `12`                            | Refresh is refused after this, from sign-in.                      |
-| `passwordLogin`                      | `false`                         | Needs `breakGlassEmail`.                                          |
-| `breakGlassEmail`                    | —                               |                                                                   |
-| `linkByEmailUntil`                   | —                               | ISO date; without it nobody is linked by email.                   |
-| `scopes`                             | `['openid','email','profile']`  |                                                                   |
-| `additionalServerURLs`               | —                               | Other public origins, used when a request arrives on one of them. |
-| `reconcile`                          | —                               | A `ReconcileSource`, such as `authentikSource(...)`.              |
-| `reconcileMaxDisableShare`           | `0.25`                          |                                                                   |
-| `reconcileHeartbeatMaxMinutes`       | `45`                            |                                                                   |
-| `reconcileStaleAfterMinutes`         | `10`                            | Releases a run still processing after this; `false` turns it off. |
-| `reconcileScheduleHooks`             | —                               | Payload schedule hooks for the reconcile task.                    |
-| `removeAccess`                       | nobody                          | `(req) => boolean`.                                               |
-| `serverURL`                          | Payload's `serverURL`           | The public origin the callback is registered under.               |
-| `buttonLabel`                        | `'Sign in with single sign-on'` |                                                                   |
-| `allowInsecureIssuer`                | `false`                         | Allows an `http:` issuer, never when `NODE_ENV=production`.       |
+| Option                               | Default                         | Notes                                                                          |
+| ------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------ |
+| `collection`                         | `'users'`                       | An auth collection.                                                            |
+| `issuer`, `clientId`, `clientSecret` | —                               | All three, or the plugin is off.                                               |
+| `roles.field`                        | —                               | The role field.                                                                |
+| `roles.table`                        | —                               | Role → groups, highest role first.                                             |
+| `roles.hasMany`                      | `true`                          | `false` stores a single value.                                                 |
+| `fields`                             | `firstName`, `lastName`         | Names of the name fields.                                                      |
+| `lastNamePlaceholder`                | `'-'`                           | Used when the provider sends no `family_name`.                                 |
+| `sessionHours`                       | `8`                             | Becomes the collection's `tokenExpiration`.                                    |
+| `sessionMaxHours`                    | `12`                            | Refresh is refused after this, from sign-in.                                   |
+| `passwordLogin`                      | `false`                         | Needs `breakGlassEmail`.                                                       |
+| `breakGlassEmail`                    | —                               |                                                                                |
+| `linkByEmailUntil`                   | —                               | ISO date; without it nobody is linked by email.                                |
+| `scopes`                             | `['openid','email','profile']`  |                                                                                |
+| `additionalServerURLs`               | —                               | Other public origins, used when a request arrives on one of them.              |
+| `reconcile`                          | —                               | A `ReconcileSource`, such as `authentikSource(...)`.                           |
+| `reconcileMaxDisableShare`           | `0.25`                          |                                                                                |
+| `reconcileHeartbeatMaxMinutes`       | `45`                            |                                                                                |
+| `reconcileStaleAfterMinutes`         | `10`                            | Releases a run still processing after this (at least 1); `false` turns it off. |
+| `reconcileScheduleHooks`             | —                               | Payload schedule hooks for the reconcile task.                                 |
+| `removeAccess`                       | nobody                          | `(req) => boolean`.                                                            |
+| `serverURL`                          | Payload's `serverURL`           | The public origin the callback is registered under.                            |
+| `buttonLabel`                        | `'Sign in with single sign-on'` |                                                                                |
+| `allowInsecureIssuer`                | `false`                         | Allows an `http:` issuer, never when `NODE_ENV=production`.                    |
 
 ## Adopting in an app
 
@@ -287,11 +300,12 @@ The plugin owns sign-in, the managed fields and the password refusals. These are
 7. **Empty roles.** A disabled user has no role. The plugin's validation allows that on a
    `required` role field (since 0.3.0), and keeps the field's own `validate`. An app-level rule
    that does the same can go.
-8. **Existing users.** Add a migration that calls `takeLinkingSnapshot` (since 0.3.0; see
+8. **Existing users.** Add a migration that calls `takeLinkingSnapshot` first (since 0.3.0; see
    [Existing users](#existing-users)), and set `linkByEmailUntil` to the end of the linking window.
 9. **Jobs.** With `reconcile`, add its queue (`oidc-reconcile` for `authentikSource`) to
    `jobs.autoRun` every 15 minutes. A run a deploy cut off is released before the next schedule
-   (since 0.3.0), so an app-level hook that does this for the reconcile task can go. If the app
+   (since 0.3.0), so an app-level hook that does this for the reconcile task can go. A custom
+   `ReconcileSource` must answer within 80% of `reconcileStaleAfterMinutes`. If the app
    post-processes its jobs config (locks the jobs-stats global, say), check the reconcile task's
    schedule still works.
 10. **Generated files.** Run `payload generate:importmap` and `payload generate:types`, and commit
