@@ -1,6 +1,6 @@
 {
   "name": "@signal58/payload-oidc",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sign in to the Payload admin with an OpenID Connect provider, with the provider as the source of truth for users and roles.",
   "keywords": [
     "authentik",
