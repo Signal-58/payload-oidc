@@ -100,8 +100,18 @@ describe.skipIf(!databaseUri)('payload-oidc in an adopting app', () => {
     expect(edit.status).toBe(200)
     expect(await bySubject('gone')).toMatchObject({ bio: 'Still credited', roles: [] })
 
-    // Anyone not disabled still needs a role, even in a sync write.
+    // A request can't disable someone to get round the rule: oidcDisabledAt is never writable.
     const active = await bySubject('admin')
+    const forged = await h.request(
+      `/api/users/${String(active?._id)}`,
+      jsonRequest('PATCH', { oidcDisabledAt: now.toISOString(), roles: [] }, admin.token),
+    )
+    expect(forged.status).toBe(200)
+    const unchanged = await bySubject('admin')
+    expect(unchanged).toMatchObject({ roles: ['admin'] })
+    expect(unchanged?.oidcDisabledAt ?? null).toBeNull()
+
+    // Anyone not disabled still needs a role, even in a sync write.
     await expect(
       h.payload.update({
         collection: 'users',
@@ -120,15 +130,35 @@ describe.skipIf(!databaseUri)('payload-oidc in an adopting app', () => {
     await h.signIn(person('linked'))
 
     // As `payload migrate` runs a migration: in a transaction, with its session.
-    const migrate = async (step: (args: OidcMigrationArgs) => Promise<number>) => {
+    const migrate = async (
+      step: (args: OidcMigrationArgs) => Promise<number>,
+      before?: (session: unknown) => Promise<unknown>,
+    ) => {
       const transactionID = await h.payload.db.beginTransaction()
       const session = (h.payload.db as unknown as { sessions: Record<string, unknown> }).sessions[
         String(transactionID)
       ]
-      const changed = await step({ payload: h.payload, session })
-      await h.payload.db.commitTransaction(transactionID!)
-      return changed
+      try {
+        await before?.(session)
+        const changed = await step({ payload: h.payload, session })
+        await h.payload.db.commitTransaction(transactionID!)
+        return changed
+      } catch (error) {
+        await h.payload.db.rollbackTransaction(transactionID!)
+        throw error
+      }
     }
+
+    // Not first in the transaction: the index build lands after the transaction's first read,
+    // so its write conflicts, and the error says why.
+    await expect(
+      migrate(takeLinkingSnapshot, (session) =>
+        raw('posts').findOne({}, { session: session as never }),
+      ),
+    ).rejects.toThrow(/conflicted with the index build on "users"/)
+    expect(await users.findOne({ email: 'old@example.test' })).not.toHaveProperty('oidcLinkable')
+    await users.dropIndex('oidcSubject_1')
+
     await expect(migrate(takeLinkingSnapshot)).resolves.toBe(1)
     await expect(migrate(takeLinkingSnapshot)).resolves.toBe(0)
 
@@ -164,6 +194,17 @@ describe.skipIf(!databaseUri)('payload-oidc in an adopting app', () => {
       task: RECONCILE_TASK_SLUG,
     } as never)) as { id: number | string }
     const _id = new ObjectId(String(queued.id))
+    // Another queue's run, long past the threshold: not this schedule's to release.
+    const elsewhere = (await h.payload.jobs.queue({
+      input: {},
+      queue: 'elsewhere',
+      task: RECONCILE_TASK_SLUG,
+    } as never)) as { id: number | string }
+    const elsewhereId = new ObjectId(String(elsewhere.id))
+    await jobs.updateOne(
+      { _id: elsewhereId },
+      { $set: { processing: true, updatedAt: new Date(now.getTime() - 60 * 60e3) } },
+    )
     /** Leaves the run as a process that died mid-run would: scheduled and still processing. */
     const cutOff = (minutesAgo: number) =>
       jobs.updateOne(
@@ -191,6 +232,8 @@ describe.skipIf(!databaseUri)('payload-oidc in an adopting app', () => {
       hasError: true,
       processing: false,
     })
+    expect(await jobs.findOne({ _id: elsewhereId })).toMatchObject({ processing: true })
+    expect(await jobs.findOne({ _id: elsewhereId })).not.toHaveProperty('error')
     // The new run completed (and Payload deleted it, as it does completed jobs by default).
     expect(await h.payload.kv.get(RECONCILE_HEARTBEAT_KEY)).toMatchObject({
       finishedAt: now.toISOString(),
