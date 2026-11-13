@@ -26,6 +26,13 @@ export const databaseUri = process.env.PAYLOAD_OIDC_DATABASE_URI?.trim()
 export const SERVER_URL = 'http://localhost:3000'
 export const CLIENT = { id: 'test-client', secret: 'test-client-secret' }
 export const BREAK_GLASS = 'break-glass@example.test'
+/**
+ * The end of the linking window: a month from when the suites start, so linking is open for the
+ * tests that need it whatever the date they run on.
+ */
+export const LINK_BY_EMAIL_UNTIL = new Date(Date.now() + 30 * 86_400e3).toISOString()
+/** A day after the linking window closes. */
+export const AFTER_LINKING = new Date(Date.parse(LINK_BY_EMAIL_UNTIL) + 86_400e3)
 export const ROLE_TABLE = {
   superadmin: ['cms-test-superadmin', 'org-admins'],
   admin: ['cms-test-admin'],
@@ -39,12 +46,18 @@ export const startHarness = async ({
   clock,
   key,
   plugin,
+  rolesRequired = false,
+  withoutServerURL = false,
 }: {
   clock: () => Date
   /** Names the suite's database and Payload instance. */
   key: string
   /** Overrides of the default plugin options; `issuer: undefined` turns the plugin off. */
   plugin?: Partial<OidcPluginOptions>
+  /** Makes the role field `required`, as many apps have it. */
+  rolesRequired?: boolean
+  /** Leaves Payload's `serverURL` unset (pass the plugin's `serverURL` option instead). */
+  withoutServerURL?: boolean
 }) => {
   const url = new URL(databaseUri!)
   url.pathname = `${url.pathname.replace(/\/$/, '') || '/payload_oidc_test'}_${key}`
@@ -65,7 +78,7 @@ export const startHarness = async ({
     clientSecret: CLIENT.secret,
     issuer: provider.state.issuer,
     additionalServerURLs: ['https://alt.example.test'],
-    linkByEmailUntil: '2026-12-01',
+    linkByEmailUntil: LINK_BY_EMAIL_UNTIL,
     roles: { field: 'roles', table: ROLE_TABLE },
     ...plugin,
   }
@@ -83,6 +96,7 @@ export const startHarness = async ({
             type: 'select',
             hasMany: true,
             options: ['superadmin', 'admin', 'editor'],
+            required: rolesRequired,
           },
         ],
       },
@@ -104,7 +118,7 @@ export const startHarness = async ({
     db: mongooseAdapter({ url: url.href }),
     plugins: [oidcPlugin(pluginOptions, { clock })],
     secret: 'payload-oidc-test-secret',
-    serverURL: SERVER_URL,
+    serverURL: withoutServerURL ? undefined : SERVER_URL,
     telemetry: false,
     typescript: { autoGenerate: false },
   })

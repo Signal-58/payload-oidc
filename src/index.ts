@@ -13,3 +13,9 @@ export { authentikSource } from './sources/authentik'
 export { reconcileUsers, RECONCILE_HEARTBEAT_KEY } from './reconcile'
 export { RECONCILE_TASK_SLUG } from './reconcile-task'
 export { findUserReferences, removeUser } from './remove'
+export {
+  clearLinkingSnapshot,
+  takeLinkingSnapshot,
+  type OidcMigrationArgs,
+  type OidcMigrationOptions,
+} from './migration'

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  AFTER_LINKING,
   BREAK_GLASS,
   databaseUri,
   jsonRequest,
@@ -88,7 +89,7 @@ describe.skipIf(!databaseUri)('payload-oidc with password sign-in on', () => {
     expect(stray.status).toBe(200)
 
     // After the cut-off only the break-glass account remains.
-    now = new Date('2026-12-02T00:00:00Z')
+    now = AFTER_LINKING
     expect((await login('snapshot@example.test')).status).toBe(401)
     expect((await login(BREAK_GLASS)).status).toBe(200)
   })

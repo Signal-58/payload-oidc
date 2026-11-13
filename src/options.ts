@@ -71,8 +71,19 @@ export type OidcPluginOptions = {
   reconcileHeartbeatMaxMinutes?: number
   /** Fields an anonymised user keeps (by default every profile field is cleared). */
   keepOnRemove?: string[]
-  /** Hooks for the reconcile schedule, such as one that releases jobs a deploy cut off. */
+  /**
+   * Hooks for the reconcile schedule. A `beforeSchedule` hook runs after stale runs are released
+   * (`reconcileStaleAfterMinutes`), in place of Payload's default rule.
+   */
   reconcileScheduleHooks?: ReconcileScheduleHooks
+  /**
+   * A reconcile run still processing after this many minutes was cut off, for example by a deploy
+   * that replaced the process mid-run, and would block the queue for good. Before each schedule,
+   * such runs are marked failed with Payload's own cancel, so a new one can be queued. A live run
+   * therefore stops, before changing anything, if the source hasn't answered within 80% of this.
+   * `false` turns both off. At least 1.
+   */
+  reconcileStaleAfterMinutes?: number | false
   /** Who may remove a disabled user. Defaults to nobody, so an app must decide. */
   removeAccess?: (req: PayloadRequest) => boolean | Promise<boolean>
   roles: {
@@ -123,6 +134,8 @@ export type ResolvedOidcOptions = {
   reconcile?: ReconcileSource
   keepOnRemove: string[]
   reconcileScheduleHooks?: ReconcileScheduleHooks
+  /** Unset when releasing stale reconcile runs is off. */
+  reconcileStaleAfterSeconds?: number
   reconcileHeartbeatMaxSeconds: number
   reconcileMaxDisableShare: number
   removeAccess: (req: PayloadRequest) => boolean | Promise<boolean>
@@ -148,6 +161,14 @@ const positiveHours = (value: number | undefined, fallback: number, name: string
     throw new Error(`payload-oidc: ${name} must be a positive number of hours.`)
   }
   return hours
+}
+
+const atLeastOneMinute = (value: number | undefined, fallback: number, name: string): number => {
+  const minutes = value ?? fallback
+  if (!Number.isFinite(minutes) || minutes < 1) {
+    throw new Error(`payload-oidc: ${name} must be a number of minutes, at least 1.`)
+  }
+  return minutes
 }
 
 const toOrigin = (url: string, name: string): string => {
@@ -231,6 +252,13 @@ export const resolveOptions = (options: OidcPluginOptions): ResolvedOidcOptions 
     reconcile: options.reconcile,
     keepOnRemove: options.keepOnRemove ?? [],
     reconcileScheduleHooks: options.reconcileScheduleHooks,
+    reconcileStaleAfterSeconds:
+      options.reconcileStaleAfterMinutes === false
+        ? undefined
+        : Math.round(
+            atLeastOneMinute(options.reconcileStaleAfterMinutes, 10, 'reconcileStaleAfterMinutes') *
+              60,
+          ),
     reconcileHeartbeatMaxSeconds: Math.round(
       positiveHours(
         (options.reconcileHeartbeatMaxMinutes ?? 45) / 60,
